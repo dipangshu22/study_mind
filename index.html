@@ -265,6 +265,39 @@
       font-size: 0.72rem; color: var(--ink-muted);
       white-space: nowrap;
     }
+
+    /* ── UPLOADED FILES LIST (sidebar) ── */
+    .uploaded-files-section { padding: 0 1.25rem 0.5rem; }
+    .uploaded-file-row {
+      display: flex; align-items: center; gap: 8px;
+      background: var(--surface);
+      border: 1px solid var(--surface-3);
+      border-radius: 9px;
+      padding: 7px 10px;
+      margin-bottom: 5px;
+      transition: border-color 0.15s;
+      animation: fadeSlide 0.2s ease;
+    }
+    .uploaded-file-row:hover { border-color: var(--surface-3); }
+    .uploaded-file-icon { color: var(--accent); font-size: 0.8rem; flex-shrink: 0; }
+    .uploaded-file-name {
+      flex: 1; font-size: 0.76rem; color: var(--ink);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      min-width: 0;
+    }
+    .uploaded-file-delete {
+      width: 22px; height: 22px;
+      border: none; background: none;
+      color: var(--ink-faint);
+      border-radius: 5px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.72rem;
+      flex-shrink: 0;
+      transition: all 0.15s;
+    }
+    .uploaded-file-delete:hover { background: #fff0f0; color: var(--red); }
+    .uploaded-file-delete.deleting { pointer-events: none; opacity: 0.5; }
     #chatContainer {
       flex: 1;
       overflow-y: auto;
@@ -1061,6 +1094,15 @@
         </div>
       </div>
 
+      <!-- Uploaded files list -->
+      <div id="uploadedFilesList" style="display:none">
+        <div class="sidebar-divider" style="margin-top:0.75rem"></div>
+        <div class="uploaded-files-section">
+          <div class="sidebar-label" style="margin-bottom:0.5rem">Uploaded files</div>
+          <div id="uploadedFilesItems"></div>
+        </div>
+      </div>
+
       <div class="sidebar-divider"></div>
 
       <div class="sidebar-section"><div class="sidebar-label">Study mode</div></div>
@@ -1515,8 +1557,28 @@ function enterApp() {
   document.getElementById('userChip').style.display = 'flex';
   document.getElementById('userEmail').textContent  = authEmail;
 
-  /* Load stats */
+  /* Load stats + fetch existing uploaded docs */
   fetchStats();
+  fetchUploadedDocs();
+}
+
+async function fetchUploadedDocs() {
+  if (!authToken) return;
+  try {
+    const res = await fetch(`${API_BASE}/collections`, { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    /* data.sources is an array of filenames already on the server */
+    if (Array.isArray(data.sources) && data.sources.length) {
+      /* Merge with any docs added this session without duplicating */
+      data.sources.forEach(name => {
+        if (!uploadedDocs.some(d => d.split(' (')[0] === name)) {
+          uploadedDocs.push(name);
+        }
+      });
+      updateDocTags();
+    }
+  } catch {}
 }
 
 function logout() {
@@ -2116,7 +2178,7 @@ async function uploadFile() {
         <i class="fas fa-circle-check"></i> ${file.name}${idLabel} ready</div>`;
       const displayName = docId ? `${file.name} (${docId})` : file.name;
       if (!uploadedDocs.includes(displayName)) { uploadedDocs.push(displayName); updateDocTags(); }
-      fetchStats(); showToast(`✓ ${file.name} uploaded${idLabel}`);
+      fetchStats(); fetchUploadedDocs(); showToast(`✓ ${file.name} uploaded${idLabel}`);
       document.getElementById('docIdInput').value = '';
       setTimeout(() => status.innerHTML = '', 5000);
     } else {
@@ -2154,7 +2216,7 @@ async function mobileUpload(inputId) {
       status.innerHTML = `<span style="color:var(--green)"><i class="fas fa-circle-check"></i> ${file.name}${idLabel} ready</span>`;
       if (!uploadedDocs.includes(dispName)) { uploadedDocs.push(dispName); updateDocTags(); }
       document.getElementById('mDocIdInput') && (document.getElementById('mDocIdInput').value = '');
-      fetchStats(); showToast(`✓ ${file.name} uploaded${idLabel}`);
+      fetchStats(); fetchUploadedDocs(); showToast(`✓ ${file.name} uploaded${idLabel}`);
     } else {
       status.innerHTML = `<span style="color:var(--red)"><i class="fas fa-circle-exclamation"></i> ${data.detail || 'Upload failed'}</span>`;
     }
@@ -2164,10 +2226,60 @@ async function mobileUpload(inputId) {
 }
 
 function updateDocTags() {
+  /* ── Top banner tags (chat panel) ── */
   const el = document.getElementById('docTags');
   el.innerHTML = uploadedDocs.length
-    ? uploadedDocs.map(d => `<span class="doc-tag"><i class="fas fa-file-lines" style="font-size:0.7rem;margin-right:3px;color:var(--accent)"></i>${d}</span>`).join('')
+    ? uploadedDocs.map(d => `<span class="doc-tag"><i class="fas fa-file-lines" style="font-size:0.7rem;margin-right:3px;color:var(--accent)"></i>${d.split(' (')[0]}</span>`).join('')
     : `<span style="font-size:0.72rem;color:var(--ink-faint)">No docs loaded</span>`;
+
+  /* ── Sidebar uploaded files list ── */
+  const section = document.getElementById('uploadedFilesList');
+  const items   = document.getElementById('uploadedFilesItems');
+  if (!uploadedDocs.length) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+  items.innerHTML = uploadedDocs.map((d, i) => {
+    const rawName = d.split(' (')[0]; // strip doc ID suffix for display
+    return `
+      <div class="uploaded-file-row" id="fileRow_${i}">
+        <i class="fas fa-file-lines uploaded-file-icon"></i>
+        <span class="uploaded-file-name" title="${d}">${rawName}</span>
+        <button class="uploaded-file-delete" onclick="deleteDocument('${rawName}', ${i})" title="Delete">
+          <i class="fas fa-trash-can"></i>
+        </button>
+      </div>`;
+  }).join('');
+}
+
+async function deleteDocument(filename, idx) {
+  if (!authToken) { showToast('Please log in to delete documents'); return; }
+  if (!confirm(`Delete "${filename}" from your documents?`)) return;
+
+  const btn = document.querySelector(`#fileRow_${idx} .uploaded-file-delete`);
+  if (btn) { btn.classList.add('deleting'); btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>'; }
+
+  try {
+    const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (res.ok) {
+      uploadedDocs = uploadedDocs.filter((_, i) => i !== idx);
+      updateDocTags();
+      fetchStats();
+      fetchUploadedDocs();
+      showToast(`🗑 "${filename}" deleted`);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(`Error: ${data.detail || 'Could not delete'}`);
+      if (btn) { btn.classList.remove('deleting'); btn.innerHTML = '<i class="fas fa-trash-can"></i>'; }
+    }
+  } catch {
+    showToast('Connection error — could not delete');
+    if (btn) { btn.classList.remove('deleting'); btn.innerHTML = '<i class="fas fa-trash-can"></i>'; }
+  }
 }
 
 /* ─────────────────────────────────────────────
@@ -2192,8 +2304,18 @@ function openDrawer(section) {
         <div class="doc-id-label" style="margin-top:0.6rem"><i class="fas fa-tag"></i> Document ID (optional)</div>
         <input type="text" id="mDocIdInput" class="doc-id-input" placeholder="e.g. lecture-01, chapter-5…" style="margin-bottom:0.6rem"/>
         <div id="mUploadStatus" style="font-size:0.8rem;min-height:20px"></div>
-        ${uploadedDocs.length ? `<div class="sidebar-label" style="margin-top:1rem;display:block">Uploaded</div>
-        ${uploadedDocs.map(d => `<div class="doc-tag" style="display:inline-flex;gap:5px;align-items:center;margin:3px"><i class="fas fa-file-lines" style="font-size:0.7rem;color:var(--accent)"></i>${d}</div>`).join('')}` : ''}
+        ${uploadedDocs.length ? `
+        <div class="sidebar-label" style="margin-top:1rem;display:block;margin-bottom:0.5rem">Uploaded files</div>
+        ${uploadedDocs.map((d, i) => {
+          const rawName = d.split(' (')[0];
+          return `<div class="uploaded-file-row" id="mFileRow_${i}" style="margin-bottom:5px">
+            <i class="fas fa-file-lines uploaded-file-icon"></i>
+            <span class="uploaded-file-name">${rawName}</span>
+            <button class="uploaded-file-delete" onclick="deleteDocument('${rawName}', ${i});closeDrawer()" title="Delete">
+              <i class="fas fa-trash-can"></i>
+            </button>
+          </div>`;
+        }).join('')}` : ''}
       </div>`;
   } else if (section === 'prompts') {
     title.textContent = 'Quick Prompts';
